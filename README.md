@@ -19,6 +19,18 @@ Google Apps Script で AI・子育て系ニュースを RSS から取得し、LI
 - `main.gs` — 本体ロジック(git管理・共有OK)
 - `config.gs` — トークン等の設定(**git管理外**。`config.example.gs` をコピーして作成)
 - `config.example.gs` — 設定ファイルの雛形
+- `appsscript.json` — GASマニフェスト(タイムゾーン等)
+- `.clasp.json` — clasp のプロジェクト紐付け(git管理外)
+- `.claspignore` — GASにpushしないファイルの指定
+
+## GASとの同期(clasp)
+
+ローカルと GAS は [clasp](https://github.com/google/clasp) で同期する(手動コピペはしない)。
+
+- ローカルを編集したら: `clasp push`
+- GASエディタ側で直接編集してしまったら: `clasp pull` → 差分を確認してコミット
+- 前提: `npm install -g @google/clasp`、`clasp login`、
+  [Apps Script API の有効化](https://script.google.com/home/usersettings)(設定済み、2026-07-13)
 
 ## セットアップ
 
@@ -27,12 +39,11 @@ Google Apps Script で AI・子育て系ニュースを RSS から取得し、LI
 `config.example.gs` を `config.gs` にコピーし、トークンと User ID を記入する。
 (トークン再発行は任意。個人利用でリスク許容済みなら旧トークンのままでも動作する)
 
-### 2. コードの貼り付けと動作確認
+### 2. コードの同期と動作確認
 
-1. GAS エディタで既存のコードを `main.gs` の内容で全置換する
-2. ファイル一覧の「＋」→「スクリプト」で `config` という名前のファイルを追加し、`config.gs` の内容を貼り付ける
-3. `checkConfig` を実行して「設定済み」と出るか確認
-4. `testSimple`(または `testWithSummary`)を実行して LINE に届くか確認
+1. `clasp push` でローカルのコードを GAS に反映する
+2. GAS エディタで `checkConfig` を実行して「設定済み」と出るか確認
+3. `testSimple`(または `testWithSummary`)を実行して LINE に届くか確認
 
 ### 3. トリガー設定
 

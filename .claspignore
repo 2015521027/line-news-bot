@@ -1,0 +1,5 @@
+# GASにpushしないファイル（config.example.gs を送ると定数が二重定義になる）
+config.example.gs
+README.md
+CLAUDE.md
+.git/**
