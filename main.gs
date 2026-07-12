@@ -124,6 +124,44 @@ function stripHtml(html) {
 	return html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
 }
 
+// --- Google News のリダイレクトURLを実記事URLに解決 ---
+// LINEボタンのURI上限(1000文字)対策 + 実記事からOGP画像を取るため。
+// Google Newsの内部API(batchexecute)を使うので、仕様変更で動かなくなったら元のURLを返す
+function resolveArticleUrl(url) {
+	if (url.indexOf('news.google.com') === -1) return url;
+	try {
+		const idMatch = url.match(/articles\/([^?]+)/);
+		if (!idMatch) return url;
+
+		// 記事ページから署名(data-n-a-sg)とタイムスタンプ(data-n-a-ts)を取得
+		const page = UrlFetchApp.fetch(url, { muteHttpExceptions: true }).getContentText();
+		const sg = page.match(/data-n-a-sg="([^"]+)"/);
+		const ts = page.match(/data-n-a-ts="([^"]+)"/);
+		if (!sg || !ts) return url;
+
+		const inner = JSON.stringify([
+			'garturlreq',
+			[['ja-JP', 'JP', ['FINANCE_TOP_INDICES', 'WEB_TEST_1_0_0'], null, null, 1, 1, 'JP:ja', null, null, null, null, null, null, null, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], 'ja-JP', 'JP', 1, [2, 4, 8], 1, 1, null, 0, 0, null, 0],
+			idMatch[1],
+			Number(ts[1]),
+			sg[1]
+		]);
+		const fReq = JSON.stringify([[['Fbv4je', inner, null, 'generic']]]);
+
+		const res = UrlFetchApp.fetch('https://news.google.com/_/DotsSplashUi/data/batchexecute', {
+			method: 'post',
+			contentType: 'application/x-www-form-urlencoded;charset=UTF-8',
+			payload: 'f.req=' + encodeURIComponent(fReq),
+			muteHttpExceptions: true
+		});
+		const m = res.getContentText().match(/garturlres\\",\\"(https?:\/\/[^\\"]+)/);
+		if (m) return m[1];
+	} catch (e) {
+		Logger.log('URL解決失敗: ' + url.slice(0, 80) + ' / ' + e);
+	}
+	return url;
+}
+
 // --- 記事ページのOGP画像URLを取得（見つからなければ null → カードは画像なしになる） ---
 function fetchOgImage(articleUrl) {
 	try {
@@ -254,10 +292,19 @@ function deliverNews(withSummary) {
 		parentingArticles = parentingArticles.map(summarize);
 	}
 
-	// カード用のサムネイル画像を取得（配信する記事だけなので1日10件程度のfetch）
-	const withImage = a => ({ ...a, image: fetchOgImage(a.link) });
-	aiArticles = aiArticles.map(withImage);
-	parentingArticles = parentingArticles.map(withImage);
+	// Google Newsのリダイレクトを実記事URLに解決してから、カード用のサムネイル画像を取得
+	// （解決できずLINEのURI上限1000文字を超えた記事は、送信全体が失敗しないよう除外する）
+	const enrich = a => {
+		const link = resolveArticleUrl(a.link);
+		return { ...a, link: link, image: fetchOgImage(link) };
+	};
+	const fitsUriLimit = a => {
+		if (a.link.length <= 1000) return true;
+		Logger.log('URI上限超過のため除外: ' + a.title);
+		return false;
+	};
+	aiArticles = aiArticles.map(enrich).filter(fitsUriLimit);
+	parentingArticles = parentingArticles.map(enrich).filter(fitsUriLimit);
 
 	const messages = [{ type: 'text', text: '📰 ' + formatDate(new Date()) + ' のニュース' }];
 	if (aiArticles.length > 0) {
