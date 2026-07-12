@@ -183,7 +183,10 @@ function resolveArticleUrl(url) {
 		const page = UrlFetchApp.fetch(url, { muteHttpExceptions: true }).getContentText();
 		const sg = page.match(/data-n-a-sg="([^"]+)"/);
 		const ts = page.match(/data-n-a-ts="([^"]+)"/);
-		if (!sg || !ts) return url;
+		if (!sg || !ts) {
+			Logger.log('URL解決失敗(署名が取れず): ' + url.slice(0, 80));
+			return url;
+		}
 
 		const inner = JSON.stringify([
 			'garturlreq',
@@ -212,7 +215,10 @@ function resolveArticleUrl(url) {
 function fetchOgImage(articleUrl) {
 	try {
 		const res = UrlFetchApp.fetch(articleUrl, { muteHttpExceptions: true, followRedirects: true });
-		if (res.getResponseCode() !== 200) return null;
+		if (res.getResponseCode() !== 200) {
+			Logger.log('OGP取得 HTTP ' + res.getResponseCode() + ': ' + articleUrl.slice(0, 80));
+			return null;
+		}
 		const html = res.getContentText().slice(0, 200000);
 		const m = html.match(/<meta[^>]+property=["']og:image["'][^>]*content=["']([^"']+)["']/i)
 			|| html.match(/<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
@@ -429,6 +435,20 @@ function checkConfig() {
 function resetSentHistory() {
 	PROPS.deleteProperty('SENT_ARTICLES');
 	Logger.log('送信済み履歴をリセットしました');
+}
+
+// 子育て記事の画像取得がどの段階で失敗しているかを調べる診断用（LINE送信はしない）
+function debugParentingImages() {
+	const articles = pickArticles(getParentingRssUrls(), MAX_ARTICLES_PER_RSS, new Set(), PARENTING_MAX_AGE_DAYS);
+	Logger.log('対象記事: ' + articles.length + '件');
+	articles.forEach((a, i) => {
+		const resolved = resolveArticleUrl(a.link);
+		const ok = resolved !== a.link;
+		const img = ok ? fetchOgImage(resolved) : fetchOgImage(a.link);
+		Logger.log('[' + (i + 1) + '] ' + a.title.slice(0, 25) +
+			' / 解決: ' + (ok ? 'OK(' + resolved.slice(0, 50) + ')' : '失敗') +
+			' / 画像: ' + (img ? 'あり' : 'なし'));
+	});
 }
 
 // シンプル版のテスト
