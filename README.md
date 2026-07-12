@@ -53,19 +53,6 @@ GAS エディタ →「トリガー」→「トリガーを追加」:
 - 実行する関数: `dailyJobSimple` または `dailyJobWithSummary`
 - イベントのソース: 時間主導型 → 日付ベースのタイマー → 好きな時間帯
 
-## 配信スケジュール
-
-- `setupTriggers` を一度実行すると、毎日 朝7時台・夜20時台 の2回配信になる(既存トリガーは置き換え)
-- 夜の配信では朝に配信済みの記事が自動で除外される(送信済み履歴による)
-- 時刻は `main.gs` の `MORNING_HOUR` / `EVENING_HOUR` で変更
-
-## Gemini機能(APIキー設定時のみ有効)
-
-- ヘッダーに「今日のダイジェスト」(3行の俯瞰まとめ)が付く
-- `dailyJobWithSummary` を使うと各カードに50文字要約も付く
-- キーは [Google AI Studio](https://aistudio.google.com/apikey) で無料発行し、`config.gs` の `GEMINI_API_KEY` に設定
-- キー未設定でも動作する(ダイジェストなし・要約は本文先頭で代用)
-
 ## メンテナンス
 
 - `resetSentHistory`: 送信済み履歴をリセット(テストで同じ記事を再送したいとき)
