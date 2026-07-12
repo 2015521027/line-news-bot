@@ -124,6 +124,23 @@ function stripHtml(html) {
 	return html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
 }
 
+// --- 記事ページのOGP画像URLを取得（見つからなければ null → カードは画像なしになる） ---
+function fetchOgImage(articleUrl) {
+	try {
+		const res = UrlFetchApp.fetch(articleUrl, { muteHttpExceptions: true, followRedirects: true });
+		if (res.getResponseCode() !== 200) return null;
+		const html = res.getContentText().slice(0, 200000);
+		const m = html.match(/<meta[^>]+property=["']og:image["'][^>]*content=["']([^"']+)["']/i)
+			|| html.match(/<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
+		if (m && /^https:\/\//.test(m[1]) && m[1].length <= 2000) {
+			return m[1].replace(/&amp;/g, '&');
+		}
+	} catch (e) {
+		Logger.log('OGP画像取得失敗: ' + articleUrl + ' / ' + e);
+	}
+	return null;
+}
+
 // --- 送信済み記事の記録（毎日同じ記事が届く問題への対策） ---
 function getSentKeys() {
 	const raw = PROPS.getProperty('SENT_ARTICLES');
@@ -182,7 +199,7 @@ function articleBubble(article, style, withSummary) {
 	if (withSummary && article.summary) {
 		body.push({ type: 'text', text: article.summary, size: 'xs', color: '#888888', wrap: true, maxLines: 4 });
 	}
-	return {
+	const bubble = {
 		type: 'bubble',
 		size: 'kilo',
 		body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
@@ -198,6 +215,10 @@ function articleBubble(article, style, withSummary) {
 			}]
 		}
 	};
+	if (article.image) {
+		bubble.hero = { type: 'image', url: article.image, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' };
+	}
+	return bubble;
 }
 
 // カルーセル1通に入るカードは最大12枚（LINEの仕様）
@@ -232,6 +253,11 @@ function deliverNews(withSummary) {
 		aiArticles = aiArticles.map(summarize);
 		parentingArticles = parentingArticles.map(summarize);
 	}
+
+	// カード用のサムネイル画像を取得（配信する記事だけなので1日10件程度のfetch）
+	const withImage = a => ({ ...a, image: fetchOgImage(a.link) });
+	aiArticles = aiArticles.map(withImage);
+	parentingArticles = parentingArticles.map(withImage);
 
 	const messages = [{ type: 'text', text: '📰 ' + formatDate(new Date()) + ' のニュース' }];
 	if (aiArticles.length > 0) {
@@ -325,11 +351,26 @@ function testWithSummary() {
 // =======================================
 // 毎日実行される関数（時間主導型トリガーに登録する）
 // =======================================
+// 配信が失敗したときはLINEに⚠️通知を送る（静かに止まるのを防ぐ）
+
+function runWithErrorNotify(fn) {
+	try {
+		fn();
+	} catch (e) {
+		Logger.log('配信エラー: ' + e + (e && e.stack ? '\n' + e.stack : ''));
+		try {
+			sendLine('⚠️ 今日のニュース配信でエラーが発生しました。\n' + e + '\n\nGASの実行ログを確認してください。');
+		} catch (e2) {
+			Logger.log('エラー通知の送信も失敗: ' + e2);
+		}
+		throw e; // GASの実行失敗履歴にも残す
+	}
+}
 
 function dailyJobSimple() {
-	sendNewsSimple();
+	runWithErrorNotify(sendNewsSimple);
 }
 
 function dailyJobWithSummary() {
-	sendNewsWithSummary();
+	runWithErrorNotify(sendNewsWithSummary);
 }
