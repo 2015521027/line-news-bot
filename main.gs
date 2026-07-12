@@ -254,9 +254,40 @@ function markSent(sentKeys, articles) {
 }
 
 // --- NGワード判定（英語キーワードは大文字小文字を区別しない） ---
+// コード内の固定リスト(NG_KEYWORDS)と、LINEの「NG 〇〇」コマンドで追加した動的リストを合わせて使う
+let ngWordsCache = null;
+
+function getExtraNgWords() {
+	const raw = PROPS.getProperty('NG_EXTRA');
+	return raw ? JSON.parse(raw) : [];
+}
+
+function getAllNgWords() {
+	if (!ngWordsCache) {
+		ngWordsCache = NG_KEYWORDS.concat(getExtraNgWords());
+	}
+	return ngWordsCache;
+}
+
+function addNgWord(word) {
+	const extra = getExtraNgWords();
+	if (word && extra.indexOf(word) === -1 && NG_KEYWORDS.indexOf(word) === -1) {
+		extra.push(word);
+		PROPS.setProperty('NG_EXTRA', JSON.stringify(extra));
+		ngWordsCache = null;
+	}
+}
+
+// 動的リストからの削除のみ可能。固定リストにあるワードなら false を返す
+function removeNgWord(word) {
+	PROPS.setProperty('NG_EXTRA', JSON.stringify(getExtraNgWords().filter(w => w !== word)));
+	ngWordsCache = null;
+	return NG_KEYWORDS.indexOf(word) === -1;
+}
+
 function isBlocked(article) {
 	const text = (article.title + ' ' + article.description).toLowerCase();
-	return NG_KEYWORDS.some(k => text.includes(k.toLowerCase()));
+	return getAllNgWords().some(k => text.includes(k.toLowerCase()));
 }
 
 // --- 記事の選定: 期間内 かつ 未送信 かつ NGワードなし の記事を新しい順に各フィードから取得 ---
@@ -417,6 +448,87 @@ function summarizeArticle(article) {
 		Logger.log('Gemini API エラー: ' + e);
 	}
 	return article.description.slice(0, 50);
+}
+
+// =======================================
+// Webhook（LINEからのメッセージで操作する双方向機能）
+// =======================================
+// 使い方: GASを「ウェブアプリ」としてデプロイし、そのURLを
+// LINE Developers コンソールの Webhook URL に設定する（README参照）
+
+function doPost(e) {
+	try {
+		const body = JSON.parse(e.postData.contents);
+		(body.events || []).forEach(ev => handleLineEvent(ev));
+	} catch (err) {
+		Logger.log('Webhook処理エラー: ' + err);
+	}
+	return ContentService.createTextOutput('ok');
+}
+
+function handleLineEvent(ev) {
+	if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
+	// 本人以外からのメッセージは無視（URLを知られても第三者に操作されないように）
+	if (!ev.source || ev.source.userId !== USER_ID) return;
+
+	const text = ev.message.text.trim();
+
+	if (text === 'ニュース' || text === 'もっと') {
+		replyText(ev.replyToken, '📰 ニュースを取得しています。1〜2分ほど待ってね');
+		scheduleAsyncJob('news');
+	} else if (/^(NG解除|ng解除)[ 　]/.test(text)) {
+		const word = text.replace(/^(NG解除|ng解除)[ 　]+/, '').trim();
+		const removed = removeNgWord(word);
+		replyText(ev.replyToken, removed
+			? '✅「' + word + '」を除外ワードから外しました。\n現在: ' + getAllNgWords().join('、')
+			: '「' + word + '」はコード内の固定リストにあるため、LINEからは外せません');
+	} else if (/^(NG|ng)[ 　]/.test(text)) {
+		const word = text.slice(2).trim();
+		addNgWord(word);
+		replyText(ev.replyToken, '🚫「' + word + '」を除外ワードに追加しました。\n現在: ' + getAllNgWords().join('、'));
+	} else if (text === 'NG一覧' || text === 'ng一覧') {
+		replyText(ev.replyToken, '🚫 現在の除外ワード:\n' + getAllNgWords().join('、'));
+	} else if (text === 'ヘルプ') {
+		replyText(ev.replyToken, [
+			'使えるコマンド:',
+			'・ニュース → 未配信の最新ニュースをすぐ配信',
+			'・もっと → 同上（前回配信の続き）',
+			'・NG 〇〇 → 除外ワードを追加',
+			'・NG解除 〇〇 → 除外ワードを削除',
+			'・NG一覧 → 除外ワードを表示',
+			'・ヘルプ → この一覧'
+		].join('\n'));
+	}
+	// コマンド以外のメッセージには反応しない
+}
+
+// --- replyTokenでの返信（即時・無料） ---
+function replyText(replyToken, text) {
+	UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
+		method: 'post',
+		contentType: 'application/json',
+		headers: { Authorization: 'Bearer ' + CHANNEL_ACCESS_TOKEN },
+		payload: JSON.stringify({ replyToken: replyToken, messages: [{ type: 'text', text: text }] }),
+		muteHttpExceptions: true
+	});
+}
+
+// --- 重い処理はWebhook応答後に別実行する（LINE側のタイムアウト・再送を避ける） ---
+function scheduleAsyncJob(job) {
+	PROPS.setProperty('PENDING_JOB', job);
+	ScriptApp.newTrigger('runPendingJob').timeBased().after(1000).create();
+}
+
+function runPendingJob() {
+	// 使い終わった一時トリガーを掃除（定期配信のトリガーは触らない）
+	ScriptApp.getProjectTriggers().forEach(t => {
+		if (t.getHandlerFunction() === 'runPendingJob') ScriptApp.deleteTrigger(t);
+	});
+	const job = PROPS.getProperty('PENDING_JOB');
+	PROPS.deleteProperty('PENDING_JOB');
+	if (job === 'news') {
+		runWithErrorNotify(sendNewsSimple);
+	}
 }
 
 // =======================================

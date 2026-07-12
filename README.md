@@ -53,9 +53,38 @@ GAS エディタ →「トリガー」→「トリガーを追加」:
 - 実行する関数: `dailyJobSimple` または `dailyJobWithSummary`
 - イベントのソース: 時間主導型 → 日付ベースのタイマー → 好きな時間帯
 
+## LINEからの操作(Webhook)
+
+トークにメッセージを送るとボットを操作できる:
+
+| コマンド | 動作 |
+|---|---|
+| `ニュース` / `もっと` | 未配信の最新ニュースをすぐ配信 |
+| `NG 〇〇` | 除外ワードを追加 |
+| `NG解除 〇〇` | 除外ワードを削除(コマンドで追加した分のみ) |
+| `NG一覧` | 除外ワードの一覧を表示 |
+| `ヘルプ` | コマンド一覧を表示 |
+
+### Webhookのセットアップ
+
+1. `clasp deploy` でウェブアプリとしてデプロイし、URL(`https://script.google.com/macros/s/<デプロイID>/exec`)を得る
+2. [LINE Developers コンソール](https://developers.line.biz/console/) → チャネル → Messaging API設定 → Webhook URL に貼り付けて「検証」→「Webhookの利用」をON
+3. [LINE Official Account Manager](https://manager.line.biz/) → 応答設定 → 「応答メッセージ」をOFF(既定の自動返信を止める)
+4. トークに `ヘルプ` と送って返信が来れば完了
+
+### Webhookコードを変更したとき
+
+ウェブアプリはデプロイ時点のバージョンが動くため、`doPost` 周りを変更したら再デプロイが必要:
+
+```
+clasp deploy -i <デプロイID>   # 同じURLのまま新バージョンに更新
+```
+
+(デプロイIDは `clasp deployments` で確認。定期配信の関数はHEADが動くので再デプロイ不要)
+
 ## メンテナンス
 
 - `resetSentHistory`: 送信済み履歴をリセット(テストで同じ記事を再送したいとき)
 - 子育て系の日替わりテーマは `main.gs` の `PARENTING_THEMES` で変更可能
 - 各フィードからの取得件数は `MAX_ARTICLES_PER_RSS` で調整
-- 興味のない話題は `NG_KEYWORDS` にキーワードを追加すると除外される(タイトル・本文で部分一致)
+- 興味のない話題は `NG_KEYWORDS` への追記、またはLINEで `NG 〇〇` と送ると除外される(タイトル・本文で部分一致)
