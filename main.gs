@@ -66,32 +66,36 @@ function getParentingRssUrls() {
 // 共通関数
 // =======================================
 
-// --- LINEにメッセージを送る（5000文字超は分割、最大5通） ---
-function sendLine(text) {
+// --- LINEにメッセージを送る（push API、1リクエスト最大5メッセージ） ---
+function pushMessages(messages) {
 	if (!CHANNEL_ACCESS_TOKEN || !USER_ID) {
 		throw new Error('config.gs に CHANNEL_ACCESS_TOKEN / USER_ID を設定してください');
 	}
 
+	const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+		method: 'post',
+		contentType: 'application/json',
+		headers: {
+			Authorization: 'Bearer ' + CHANNEL_ACCESS_TOKEN
+		},
+		payload: JSON.stringify({ to: USER_ID, messages: messages.slice(0, 5) }),
+		muteHttpExceptions: true
+	});
+	if (res.getResponseCode() !== 200) {
+		Logger.log('LINE送信失敗: ' + res.getContentText());
+		throw new Error('LINE送信失敗(HTTP ' + res.getResponseCode() + ')');
+	}
+}
+
+// --- テキスト1通を送る（5000文字超は分割、最大5通） ---
+function sendLine(text) {
 	const chunks = [];
 	let rest = text;
 	while (rest.length > 0 && chunks.length < 5) {
 		chunks.push(rest.slice(0, LINE_TEXT_LIMIT));
 		rest = rest.slice(LINE_TEXT_LIMIT);
 	}
-
-	const payload = {
-		to: USER_ID,
-		messages: chunks.map(t => ({ type: 'text', text: t }))
-	};
-
-	UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
-		method: 'post',
-		contentType: 'application/json',
-		headers: {
-			Authorization: 'Bearer ' + CHANNEL_ACCESS_TOKEN
-		},
-		payload: JSON.stringify(payload)
-	});
+	pushMessages(chunks.map(t => ({ type: 'text', text: t })));
 }
 
 // --- RSS取得（pubDate付き） ---
@@ -164,20 +168,48 @@ function pickArticles(urls, perFeed, sentKeys, maxAgeDays) {
 	return picked;
 }
 
-// --- メッセージのセクション組み立て ---
-function buildSection(title, articles, withSummary) {
-	let s = `【${title}】\n`;
-	if (articles.length === 0) {
-		return s + '(今日は新着なし)\n\n';
+// --- Flex Message（カルーセル）: 記事を1枚ずつのカードにして横スワイプでめくれる形式 ---
+const CATEGORY_STYLES = {
+	ai: { label: 'AI・技術', color: '#1E6FD9' },
+	parenting: { label: '子育て・育児', color: '#E8871E' }
+};
+
+function articleBubble(article, style, withSummary) {
+	const body = [
+		{ type: 'text', text: style.label, size: 'xxs', color: style.color, weight: 'bold' },
+		{ type: 'text', text: article.title, size: 'sm', weight: 'bold', wrap: true, maxLines: 5 }
+	];
+	if (withSummary && article.summary) {
+		body.push({ type: 'text', text: article.summary, size: 'xs', color: '#888888', wrap: true, maxLines: 4 });
 	}
-	articles.forEach(a => {
-		s += `・${a.title}\n`;
-		if (withSummary && a.summary) {
-			s += `  要約: ${a.summary}\n`;
+	return {
+		type: 'bubble',
+		size: 'kilo',
+		body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+		footer: {
+			type: 'box',
+			layout: 'vertical',
+			contents: [{
+				type: 'button',
+				style: 'primary',
+				height: 'sm',
+				color: style.color,
+				action: { type: 'uri', label: '記事を読む', uri: article.link }
+			}]
 		}
-		s += `  ${a.link}\n\n`;
-	});
-	return s;
+	};
+}
+
+// カルーセル1通に入るカードは最大12枚（LINEの仕様）
+function carouselMessage(altText, articles, style, withSummary) {
+	return {
+		type: 'flex',
+		altText: altText,
+		contents: {
+			type: 'carousel',
+			contents: articles.slice(0, 12).map(a => articleBubble(a, style, withSummary))
+		}
+	};
 }
 
 function formatDate(d) {
@@ -185,44 +217,48 @@ function formatDate(d) {
 }
 
 // =======================================
-// シンプル版（タイトルとリンクのみ）
+// 配信本体（シンプル版・Gemini要約版 共通）
 // =======================================
+// 「日付ヘッダー(テキスト) + AIカルーセル + 子育てカルーセル」の最大3通を1回のpushで送る
 
-function sendNewsSimple() {
+function deliverNews(withSummary) {
 	const sentKeys = getSentKeys();
 
-	const aiArticles = pickArticles(getAiRssUrls(), MAX_ARTICLES_PER_RSS, sentKeys, AI_MAX_AGE_DAYS);
-	const parentingArticles = pickArticles(getParentingRssUrls(), MAX_ARTICLES_PER_RSS, sentKeys, PARENTING_MAX_AGE_DAYS);
+	let aiArticles = pickArticles(getAiRssUrls(), MAX_ARTICLES_PER_RSS, sentKeys, AI_MAX_AGE_DAYS);
+	let parentingArticles = pickArticles(getParentingRssUrls(), MAX_ARTICLES_PER_RSS, sentKeys, PARENTING_MAX_AGE_DAYS);
 
-	let message = '📰 ' + formatDate(new Date()) + ' のニュース\n\n';
-	message += buildSection('AI・技術ニュース', aiArticles, false);
-	message += buildSection('子育て・育児', parentingArticles, false);
+	if (withSummary) {
+		const summarize = a => ({ ...a, summary: summarizeArticle(a) });
+		aiArticles = aiArticles.map(summarize);
+		parentingArticles = parentingArticles.map(summarize);
+	}
 
-	sendLine(message.trim());
+	const messages = [{ type: 'text', text: '📰 ' + formatDate(new Date()) + ' のニュース' }];
+	if (aiArticles.length > 0) {
+		messages.push(carouselMessage('AI・技術ニュース ' + aiArticles.length + '件', aiArticles, CATEGORY_STYLES.ai, withSummary));
+	}
+	if (parentingArticles.length > 0) {
+		messages.push(carouselMessage('子育て・育児ニュース ' + parentingArticles.length + '件', parentingArticles, CATEGORY_STYLES.parenting, withSummary));
+	}
+	if (messages.length === 1) {
+		messages[0].text += '\n(今日は新着なし)';
+	}
+
+	pushMessages(messages);
 	markSent(sentKeys, aiArticles.concat(parentingArticles));
-	Logger.log('シンプル版送信完了: AI ' + aiArticles.length + '件 / 子育て ' + parentingArticles.length + '件');
+	Logger.log('送信完了: AI ' + aiArticles.length + '件 / 子育て ' + parentingArticles.length + '件');
 }
 
-// =======================================
-// Gemini要約版（要約付き）
-// =======================================
+// シンプル版（タイトルのみのカード）
+function sendNewsSimple() {
+	deliverNews(false);
+}
+
+// Gemini要約版（要約付きカード）
 // フィード自体がカテゴリ別なので、Geminiにはカテゴリ判定させず要約だけ行う。
 // 要約は「送信する記事だけ」に実行するので、API呼び出しは1日あたり10件程度で済む。
-
 function sendNewsWithSummary() {
-	const sentKeys = getSentKeys();
-
-	const withSummary = a => ({ ...a, summary: summarizeArticle(a) });
-	const aiArticles = pickArticles(getAiRssUrls(), MAX_ARTICLES_PER_RSS, sentKeys, AI_MAX_AGE_DAYS).map(withSummary);
-	const parentingArticles = pickArticles(getParentingRssUrls(), MAX_ARTICLES_PER_RSS, sentKeys, PARENTING_MAX_AGE_DAYS).map(withSummary);
-
-	let message = '📰 ' + formatDate(new Date()) + ' のニュース\n\n';
-	message += buildSection('AI・技術ニュース', aiArticles, true);
-	message += buildSection('子育て・育児', parentingArticles, true);
-
-	sendLine(message.trim());
-	markSent(sentKeys, aiArticles.concat(parentingArticles));
-	Logger.log('Gemini要約版送信完了: AI ' + aiArticles.length + '件 / 子育て ' + parentingArticles.length + '件');
+	deliverNews(true);
 }
 
 // --- Geminiで要約 ---
