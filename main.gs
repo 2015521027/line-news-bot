@@ -58,9 +58,9 @@ const PARENTING_THEMES = [
 function getParentingRssUrls() {
 	const todayTheme = PARENTING_THEMES[new Date().getDay()];
 	return [
-		googleNewsRss(todayTheme, '7d'),
-		googleNewsRss('子育て', '1d'),
-		googleNewsRss('育児', '1d')
+		'https://192abc.com/feed',                                                          // こそだてハック(直RSS、画像が安定)
+		'https://b.hatena.ne.jp/search/tag?q=%E5%AD%90%E8%82%B2%E3%81%A6&users=5&mode=rss', // はてブ「子育て」タグ(5users以上の人気記事)
+		googleNewsRss(todayTheme, '7d')                                                     // 日替わりテーマ(Google News、画像は取れたら)
 	];
 }
 
