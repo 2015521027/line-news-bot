@@ -1,6 +1,7 @@
 # 秘密情報
 .env
 *.token
+config.gs
 
 # Claude Code ローカル設定
 .claude/settings.local.json

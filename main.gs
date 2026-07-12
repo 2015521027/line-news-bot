@@ -2,17 +2,14 @@
 // ニュース取得＋LINE配信（改善版）
 // シンプル版とGemini要約版の両方を実装
 //
-// 【事前設定】GASエディタの「プロジェクトの設定 → スクリプト プロパティ」に以下を登録する
-//   LINE_TOKEN     : LINE Messaging API チャネルアクセストークン
-//   LINE_USER_ID   : 送信先の LINE User ID
-//   GEMINI_API_KEY : Gemini APIキー（要約版を使う場合のみ）
+// 【事前設定】トークン等の設定は config.gs に記載する
+// （GASエディタにも main.gs と config.gs の2ファイルを置く。
+//   config.gs は git 管理外なので、コードを共有してもトークンは漏れない）
 // =======================================
 
 // --- 設定 ---
-const PROPS = PropertiesService.getScriptProperties();
-const CHANNEL_ACCESS_TOKEN = PROPS.getProperty('LINE_TOKEN');
-const USER_ID = PROPS.getProperty('LINE_USER_ID');
-const GEMINI_API_KEY = PROPS.getProperty('GEMINI_API_KEY');
+// CHANNEL_ACCESS_TOKEN / USER_ID / GEMINI_API_KEY は config.gs で定義
+const PROPS = PropertiesService.getScriptProperties(); // 送信済み履歴の保存に使用
 
 const GEMINI_MODEL = 'gemini-2.0-flash';
 
@@ -66,7 +63,7 @@ function getParentingRssUrls() {
 // --- LINEにメッセージを送る（5000文字超は分割、最大5通） ---
 function sendLine(text) {
 	if (!CHANNEL_ACCESS_TOKEN || !USER_ID) {
-		throw new Error('スクリプト プロパティに LINE_TOKEN / LINE_USER_ID を設定してください');
+		throw new Error('config.gs に CHANNEL_ACCESS_TOKEN / USER_ID を設定してください');
 	}
 
 	const chunks = [];
@@ -254,8 +251,8 @@ function summarizeArticle(article) {
 
 // 設定が揃っているか確認（初回セットアップ時に実行）
 function checkConfig() {
-	Logger.log('LINE_TOKEN: ' + (CHANNEL_ACCESS_TOKEN ? '設定済み' : '未設定'));
-	Logger.log('LINE_USER_ID: ' + (USER_ID ? '設定済み' : '未設定'));
+	Logger.log('CHANNEL_ACCESS_TOKEN: ' + (CHANNEL_ACCESS_TOKEN ? '設定済み' : '未設定(config.gs を確認)'));
+	Logger.log('USER_ID: ' + (USER_ID ? '設定済み' : '未設定(config.gs を確認)'));
 	Logger.log('GEMINI_API_KEY: ' + (GEMINI_API_KEY ? '設定済み' : '未設定(要約版を使う場合のみ必要)'));
 	Logger.log('送信済み履歴: ' + getSentKeys().size + '件');
 }
