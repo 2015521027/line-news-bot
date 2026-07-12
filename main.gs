@@ -32,13 +32,15 @@ function googleNewsRss(query, when) {
 	return 'https://news.google.com/rss/search?q=' + encodeURIComponent(q) + '&hl=ja&gl=JP&ceid=JP:ja';
 }
 
-// AI関連のRSS（ニュースが多いので過去1日に限定）
+// AI・技術系: Google News検索をやめ、テックブログ・専門メディアのRSSに絞る
 function getAiRssUrls() {
 	return [
-		googleNewsRss('Gemini', '1d'),
-		googleNewsRss('ChatGPT', '1d'),
-		googleNewsRss('生成AI 活用', '1d'),
-		'https://feeds.bbci.co.uk/news/technology/rss.xml'
+		'https://zenn.dev/topics/ai/feed',                    // Zenn AIトピック
+		'https://zenn.dev/topics/%E7%94%9F%E6%88%90ai/feed',  // Zenn 生成AIトピック
+		'https://qiita.com/tags/ai/feed',                     // Qiita AIタグ
+		'https://b.hatena.ne.jp/hotentry/it.rss',             // はてなブックマーク IT人気エントリ
+		'https://rss.itmedia.co.jp/rss/2.0/aiplus.xml',       // ITmedia AI+
+		'https://www.publickey1.jp/atom.xml'                  // Publickey(エンタープライズIT)
 	];
 }
 
@@ -98,7 +100,7 @@ function sendLine(text) {
 	pushMessages(chunks.map(t => ({ type: 'text', text: t })));
 }
 
-// --- RSS取得（pubDate付き） ---
+// --- フィード取得（RSS 2.0 / RSS 1.0(RDF) / Atom の3形式に対応） ---
 function fetchRssArticles(rssUrl) {
 	try {
 		const res = UrlFetchApp.fetch(rssUrl, { muteHttpExceptions: true });
@@ -106,18 +108,62 @@ function fetchRssArticles(rssUrl) {
 			Logger.log('RSS取得失敗(HTTP ' + res.getResponseCode() + '): ' + rssUrl);
 			return [];
 		}
-		const xml = XmlService.parse(res.getContentText());
-		const items = xml.getRootElement().getChild('channel').getChildren('item');
-		return items.map(item => ({
-			title: (item.getChildText('title') || '').trim(),
-			link: item.getChildText('link') || '',
-			description: stripHtml(item.getChildText('description') || ''),
-			pubDate: new Date(item.getChildText('pubDate') || 0)
-		}));
+		const root = XmlService.parse(res.getContentText()).getRootElement();
+		switch (root.getName()) {
+			case 'rss': return parseRss2(root);   // Zenn, ITmedia, Google News など
+			case 'RDF': return parseRss1(root);   // はてなブックマーク など
+			case 'feed': return parseAtom(root);  // Qiita, Publickey など
+			default:
+				Logger.log('未対応のフィード形式(' + root.getName() + '): ' + rssUrl);
+				return [];
+		}
 	} catch (e) {
 		Logger.log('RSS取得失敗: ' + rssUrl + ' / ' + e);
 		return [];
 	}
+}
+
+function makeArticle(title, link, description, dateStr) {
+	return {
+		title: (title || '').trim(),
+		link: link || '',
+		description: stripHtml(description || ''),
+		pubDate: new Date(dateStr || 0)
+	};
+}
+
+function parseRss2(root) {
+	return root.getChild('channel').getChildren('item').map(item => makeArticle(
+		item.getChildText('title'),
+		item.getChildText('link'),
+		item.getChildText('description'),
+		item.getChildText('pubDate')
+	));
+}
+
+function parseRss1(root) {
+	const RSS1 = XmlService.getNamespace('http://purl.org/rss/1.0/');
+	const DC = XmlService.getNamespace('http://purl.org/dc/elements/1.1/');
+	return root.getChildren('item', RSS1).map(item => makeArticle(
+		item.getChildText('title', RSS1),
+		item.getChildText('link', RSS1),
+		item.getChildText('description', RSS1),
+		item.getChildText('date', DC)
+	));
+}
+
+function parseAtom(root) {
+	const ATOM = XmlService.getNamespace('http://www.w3.org/2005/Atom');
+	return root.getChildren('entry', ATOM).map(entry => {
+		const links = entry.getChildren('link', ATOM);
+		const alt = links.filter(l => !l.getAttribute('rel') || l.getAttribute('rel').getValue() === 'alternate')[0] || links[0];
+		return makeArticle(
+			entry.getChildText('title', ATOM),
+			alt ? alt.getAttribute('href').getValue() : '',
+			entry.getChildText('summary', ATOM) || entry.getChildText('content', ATOM),
+			entry.getChildText('published', ATOM) || entry.getChildText('updated', ATOM)
+		);
+	});
 }
 
 function stripHtml(html) {
