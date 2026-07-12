@@ -1,0 +1,10 @@
+# 秘密情報
+.env
+*.token
+
+# Claude Code ローカル設定
+.claude/settings.local.json
+
+# clasp を導入した場合
+.clasp.json
+node_modules/
