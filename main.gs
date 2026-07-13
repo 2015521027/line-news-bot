@@ -101,9 +101,8 @@ function sendLine(text) {
 }
 
 // --- フィード取得（RSS 2.0 / RSS 1.0(RDF) / Atom の3形式に対応） ---
-function fetchRssArticles(rssUrl) {
+function parseFeedResponse(res, rssUrl) {
 	try {
-		const res = UrlFetchApp.fetch(rssUrl, { muteHttpExceptions: true });
 		if (res.getResponseCode() !== 200) {
 			Logger.log('RSS取得失敗(HTTP ' + res.getResponseCode() + '): ' + rssUrl);
 			return [];
@@ -120,6 +119,27 @@ function fetchRssArticles(rssUrl) {
 	} catch (e) {
 		Logger.log('RSS取得失敗: ' + rssUrl + ' / ' + e);
 		return [];
+	}
+}
+
+function fetchRssArticles(rssUrl) {
+	try {
+		const res = UrlFetchApp.fetch(rssUrl, { muteHttpExceptions: true });
+		return parseFeedResponse(res, rssUrl);
+	} catch (e) {
+		Logger.log('RSS取得失敗: ' + rssUrl + ' / ' + e);
+		return [];
+	}
+}
+
+// 全フィードを並列で一括取得（1本ずつだと合計20秒以上かかるため）
+function fetchAllFeeds(urls) {
+	try {
+		const responses = UrlFetchApp.fetchAll(urls.map(u => ({ url: u, muteHttpExceptions: true })));
+		return responses.map((res, i) => parseFeedResponse(res, urls[i]));
+	} catch (e) {
+		Logger.log('フィード一括取得に失敗、順次取得に切替: ' + e);
+		return urls.map(u => fetchRssArticles(u));
 	}
 }
 
@@ -212,9 +232,8 @@ function resolveArticleUrl(url) {
 }
 
 // --- 記事ページのOGP画像URLを取得（見つからなければ null → カードは画像なしになる） ---
-function fetchOgImage(articleUrl) {
+function extractOgImage(res, articleUrl) {
 	try {
-		const res = UrlFetchApp.fetch(articleUrl, { muteHttpExceptions: true, followRedirects: true });
 		if (res.getResponseCode() !== 200) {
 			Logger.log('OGP取得 HTTP ' + res.getResponseCode() + ': ' + articleUrl.slice(0, 80));
 			return null;
@@ -229,6 +248,27 @@ function fetchOgImage(articleUrl) {
 		Logger.log('OGP画像取得失敗: ' + articleUrl + ' / ' + e);
 	}
 	return null;
+}
+
+function fetchOgImage(articleUrl) {
+	try {
+		const res = UrlFetchApp.fetch(articleUrl, { muteHttpExceptions: true, followRedirects: true });
+		return extractOgImage(res, articleUrl);
+	} catch (e) {
+		Logger.log('OGP画像取得失敗: ' + articleUrl + ' / ' + e);
+		return null;
+	}
+}
+
+// 配信対象全記事の画像を並列で一括取得
+function fetchOgImagesAll(urls) {
+	try {
+		const responses = UrlFetchApp.fetchAll(urls.map(u => ({ url: u, muteHttpExceptions: true, followRedirects: true })));
+		return responses.map((res, i) => extractOgImage(res, urls[i]));
+	} catch (e) {
+		Logger.log('画像一括取得に失敗、順次取得に切替: ' + e);
+		return urls.map(u => fetchOgImage(u));
+	}
 }
 
 // --- 送信済み記事の記録（毎日同じ記事が届く問題への対策） ---
@@ -294,8 +334,8 @@ function isBlocked(article) {
 function pickArticles(urls, perFeed, sentKeys, maxAgeDays) {
 	const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
 	const picked = [];
-	urls.forEach(url => {
-		const fresh = fetchRssArticles(url)
+	fetchAllFeeds(urls).forEach(articles => {
+		const fresh = articles
 			.filter(a => a.pubDate > cutoff)
 			.filter(a => !isBlocked(a))
 			.filter(a => !sentKeys.has(articleKey(a)))
@@ -386,19 +426,20 @@ function deliverNews(withSummary) {
 		parentingArticles = parentingArticles.map(summarize);
 	}
 
-	// Google Newsのリダイレクトを実記事URLに解決してから、カード用のサムネイル画像を取得
+	// Google Newsのリダイレクトを実記事URLに解決（対象は少数）
 	// （解決できずLINEのURI上限1000文字を超えた記事は、送信全体が失敗しないよう除外する）
-	const enrich = a => {
-		const link = resolveArticleUrl(a.link);
-		return { ...a, link: link, image: fetchOgImage(link) };
-	};
 	const fitsUriLimit = a => {
 		if (a.link.length <= 1000) return true;
 		Logger.log('URI上限超過のため除外: ' + a.title);
 		return false;
 	};
-	aiArticles = aiArticles.map(enrich).filter(fitsUriLimit);
-	parentingArticles = parentingArticles.map(enrich).filter(fitsUriLimit);
+	aiArticles = aiArticles.map(a => ({ ...a, link: resolveArticleUrl(a.link) })).filter(fitsUriLimit);
+	parentingArticles = parentingArticles.map(a => ({ ...a, link: resolveArticleUrl(a.link) })).filter(fitsUriLimit);
+
+	// カード用のサムネイル画像を並列で一括取得
+	const allArticles = aiArticles.concat(parentingArticles);
+	const images = fetchOgImagesAll(allArticles.map(a => a.link));
+	allArticles.forEach((a, i) => { a.image = images[i]; });
 
 	const messages = [{ type: 'text', text: '📰 ' + formatDate(new Date()) + ' のニュース' }];
 	if (aiArticles.length > 0) {
@@ -497,8 +538,8 @@ function handleLineEvent(ev) {
 	const text = ev.message.text.trim();
 
 	if (text === 'ニュース' || text === 'もっと') {
-		replyText(ev.replyToken, '📰 ニュースを取得しています。1〜2分ほど待ってね');
-		scheduleAsyncJob('news');
+		replyText(ev.replyToken, '📰 ニュースを取得しています。30秒ほど待ってね');
+		runWithErrorNotify(sendNewsSimple); // 返信済みなのでこのまま同期実行してよい
 	} else if (/^(NG解除|ng解除)[ 　]/.test(text)) {
 		const word = text.replace(/^(NG解除|ng解除)[ 　]+/, '').trim();
 		const removed = removeNgWord(word);
@@ -577,24 +618,6 @@ function replyMessages(replyToken, messages) {
 
 function replyText(replyToken, text) {
 	replyMessages(replyToken, [{ type: 'text', text: text }]);
-}
-
-// --- 重い処理はWebhook応答後に別実行する（LINE側のタイムアウト・再送を避ける） ---
-function scheduleAsyncJob(job) {
-	PROPS.setProperty('PENDING_JOB', job);
-	ScriptApp.newTrigger('runPendingJob').timeBased().after(1000).create();
-}
-
-function runPendingJob() {
-	// 使い終わった一時トリガーを掃除（定期配信のトリガーは触らない）
-	ScriptApp.getProjectTriggers().forEach(t => {
-		if (t.getHandlerFunction() === 'runPendingJob') ScriptApp.deleteTrigger(t);
-	});
-	const job = PROPS.getProperty('PENDING_JOB');
-	PROPS.deleteProperty('PENDING_JOB');
-	if (job === 'news') {
-		runWithErrorNotify(sendNewsSimple);
-	}
 }
 
 // =======================================
