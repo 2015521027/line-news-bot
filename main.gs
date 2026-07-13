@@ -459,7 +459,12 @@ function summarizeArticle(article) {
 function doPost(e) {
 	try {
 		const body = JSON.parse(e.postData.contents);
-		(body.events || []).forEach(ev => handleLineEvent(ev));
+		const events = body.events || [];
+		Logger.log('Webhook受信: ' + events.length + '件 / ' + events.map(ev =>
+			ev.type + ':' + (ev.message && ev.message.text ? ev.message.text.slice(0, 20) : '-') +
+			' from ' + (ev.source && ev.source.userId ? ev.source.userId.slice(0, 8) + '…' : '不明')
+		).join(', '));
+		events.forEach(ev => handleLineEvent(ev));
 	} catch (err) {
 		Logger.log('Webhook処理エラー: ' + err);
 	}
@@ -504,13 +509,16 @@ function handleLineEvent(ev) {
 
 // --- replyTokenでの返信（即時・無料） ---
 function replyText(replyToken, text) {
-	UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
+	const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
 		method: 'post',
 		contentType: 'application/json',
 		headers: { Authorization: 'Bearer ' + CHANNEL_ACCESS_TOKEN },
 		payload: JSON.stringify({ replyToken: replyToken, messages: [{ type: 'text', text: text }] }),
 		muteHttpExceptions: true
 	});
+	if (res.getResponseCode() !== 200) {
+		Logger.log('返信失敗(HTTP ' + res.getResponseCode() + '): ' + res.getContentText().slice(0, 200));
+	}
 }
 
 // --- 重い処理はWebhook応答後に別実行する（LINE側のタイムアウト・再送を避ける） ---
