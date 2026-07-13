@@ -68,12 +68,27 @@ function getParentingRssUrls() {
 // 共通関数
 // =======================================
 
+// --- デバッグ用トレース（直近50件をプロパティに保存、doGetで外から読める） ---
+function trace(msg) {
+	try {
+		const arr = JSON.parse(PROPS.getProperty('TRACE') || '[]');
+		arr.push(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'HH:mm:ss') + ' ' + msg);
+		PROPS.setProperty('TRACE', JSON.stringify(arr.slice(-50)));
+	} catch (e) {}
+}
+
+function doGet() {
+	const arr = JSON.parse(PROPS.getProperty('TRACE') || '[]');
+	return ContentService.createTextOutput(arr.length ? arr.join('\n') : '(trace無し)');
+}
+
 // --- LINEにメッセージを送る（push API、1リクエスト最大5メッセージ） ---
 function pushMessages(messages) {
 	if (!CHANNEL_ACCESS_TOKEN || !USER_ID) {
 		throw new Error('config.gs に CHANNEL_ACCESS_TOKEN / USER_ID を設定してください');
 	}
 
+	trace('push実行: ' + messages.length + '通');
 	const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
 		method: 'post',
 		contentType: 'application/json',
@@ -83,6 +98,7 @@ function pushMessages(messages) {
 		payload: JSON.stringify({ to: USER_ID, messages: messages.slice(0, 5) }),
 		muteHttpExceptions: true
 	});
+	trace('push応答: HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 150));
 	if (res.getResponseCode() !== 200) {
 		Logger.log('LINE送信失敗: ' + res.getContentText());
 		throw new Error('LINE送信失敗(HTTP ' + res.getResponseCode() + ')');
@@ -415,10 +431,12 @@ function formatDate(d) {
 // 「日付ヘッダー(テキスト) + AIカルーセル + 子育てカルーセル」の最大3通を1回のpushで送る
 
 function deliverNews(withSummary) {
+	trace('deliverNews開始');
 	const sentKeys = getSentKeys();
 
 	let aiArticles = pickArticles(getAiRssUrls(), MAX_ARTICLES_PER_RSS, sentKeys, AI_MAX_AGE_DAYS);
 	let parentingArticles = pickArticles(getParentingRssUrls(), MAX_ARTICLES_PER_RSS, sentKeys, PARENTING_MAX_AGE_DAYS);
+	trace('記事選定: AI ' + aiArticles.length + '件 / 子育て ' + parentingArticles.length + '件');
 
 	if (withSummary) {
 		const summarize = a => ({ ...a, summary: summarizeArticle(a) });
@@ -672,10 +690,12 @@ function runWithErrorNotify(fn) {
 		fn();
 	} catch (e) {
 		Logger.log('配信エラー: ' + e + (e && e.stack ? '\n' + e.stack : ''));
+		trace('配信エラー: ' + e + ' @ ' + (e && e.stack ? e.stack.split('\n')[1] : '?'));
 		try {
 			sendLine('⚠️ 今日のニュース配信でエラーが発生しました。\n' + e + '\n\nGASの実行ログを確認してください。');
 		} catch (e2) {
 			Logger.log('エラー通知の送信も失敗: ' + e2);
+			trace('エラー通知の送信も失敗: ' + e2);
 		}
 		throw e; // GASの実行失敗履歴にも残す
 	}
