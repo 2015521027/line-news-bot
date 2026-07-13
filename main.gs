@@ -327,12 +327,23 @@ function articleBubble(article, style, withSummary) {
 		footer: {
 			type: 'box',
 			layout: 'vertical',
+			spacing: 'sm',
 			contents: [{
 				type: 'button',
 				style: 'primary',
 				height: 'sm',
 				color: style.color,
 				action: { type: 'uri', label: '記事を読む', uri: article.link }
+			}, {
+				type: 'button',
+				style: 'secondary',
+				height: 'sm',
+				action: {
+					type: 'postback',
+					label: '興味ない',
+					data: 'dislike|' + article.title.slice(0, 250),
+					displayText: '興味ない👎'
+				}
 			}]
 		}
 	};
@@ -472,9 +483,16 @@ function doPost(e) {
 }
 
 function handleLineEvent(ev) {
-	if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
 	// 本人以外からのメッセージは無視（URLを知られても第三者に操作されないように）
 	if (!ev.source || ev.source.userId !== USER_ID) return;
+
+	// カードのボタン(postback)への応答
+	if (ev.type === 'postback') {
+		handlePostback(ev);
+		return;
+	}
+
+	if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
 
 	const text = ev.message.text.trim();
 
@@ -501,24 +519,64 @@ function handleLineEvent(ev) {
 			'・NG 〇〇 → 除外ワードを追加',
 			'・NG解除 〇〇 → 除外ワードを削除',
 			'・NG一覧 → 除外ワードを表示',
-			'・ヘルプ → この一覧'
+			'・ヘルプ → この一覧',
+			'',
+			'カードの「興味ない」ボタンを押すと、除外ワードの候補から選んで登録できます'
 		].join('\n'));
 	}
 	// コマンド以外のメッセージには反応しない
 }
 
+// --- 「興味ない」ボタンなどのpostback処理 ---
+function handlePostback(ev) {
+	const data = (ev.postback && ev.postback.data) || '';
+
+	if (data.indexOf('dislike|') === 0) {
+		// タイトルから除外ワード候補を出して、クイックリプライで選んでもらう
+		const words = extractKeywords(data.slice(8));
+		if (words.length === 0) {
+			replyText(ev.replyToken, 'この記事から除外候補になるワードが見つかりませんでした。「NG 〇〇」で直接指定してください');
+			return;
+		}
+		replyMessages(ev.replyToken, [{
+			type: 'text',
+			text: '👎 どの話題を今後除外しますか？（下から選択）',
+			quickReply: {
+				items: words.map(w => ({
+					type: 'action',
+					action: { type: 'postback', label: w.slice(0, 20), data: 'ng|' + w, displayText: 'NG ' + w }
+				}))
+			}
+		}]);
+	} else if (data.indexOf('ng|') === 0) {
+		const word = data.slice(3);
+		addNgWord(word);
+		replyText(ev.replyToken, '🚫「' + word + '」を除外ワードに追加しました。今後この話題は配信されません。\n（戻すときは「NG解除 ' + word + '」）');
+	}
+}
+
+// --- タイトルから除外ワード候補を抽出（カタカナ3文字以上・漢字2文字以上・英単語3文字以上） ---
+function extractKeywords(title) {
+	const tokens = title.match(/[ァ-ヶー]{3,}|[一-龠々]{2,}|[A-Za-z][A-Za-z0-9.+#-]{2,}/g) || [];
+	return [...new Set(tokens)].slice(0, 6);
+}
+
 // --- replyTokenでの返信（即時・無料） ---
-function replyText(replyToken, text) {
+function replyMessages(replyToken, messages) {
 	const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
 		method: 'post',
 		contentType: 'application/json',
 		headers: { Authorization: 'Bearer ' + CHANNEL_ACCESS_TOKEN },
-		payload: JSON.stringify({ replyToken: replyToken, messages: [{ type: 'text', text: text }] }),
+		payload: JSON.stringify({ replyToken: replyToken, messages: messages }),
 		muteHttpExceptions: true
 	});
 	if (res.getResponseCode() !== 200) {
 		Logger.log('返信失敗(HTTP ' + res.getResponseCode() + '): ' + res.getContentText().slice(0, 200));
 	}
+}
+
+function replyText(replyToken, text) {
+	replyMessages(replyToken, [{ type: 'text', text: text }]);
 }
 
 // --- 重い処理はWebhook応答後に別実行する（LINE側のタイムアウト・再送を避ける） ---
